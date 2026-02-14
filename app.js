@@ -4,6 +4,10 @@ const statsEl = document.getElementById("stats");
 const toggleBtn = document.getElementById("toggleBtn");
 const resetBtn = document.getElementById("resetBtn");
 const newMapBtn = document.getElementById("newMapBtn");
+const learnBtn = document.getElementById("learnBtn");
+const resetBrainBtn = document.getElementById("resetBrainBtn");
+const robotSelect = document.getElementById("robotSelect");
+const robotLegendEl = document.getElementById("robotLegend");
 
 const WORLD = {
   width: canvas.width,
@@ -23,12 +27,38 @@ const ROBOT_BASE = {
   maxWheelSpeed: 120,
 };
 
+const ROBOT_COUNT = 10;
+
+const BRAIN_CFG = {
+  inputSize: 9,
+  hiddenSize: 14,
+  outputSize: 2,
+};
+
+const TRAIN_DEFAULT = {
+  enabled: true,
+  lr: 0.003,
+  sigma: 0.36,
+  sigmaMin: 0.06,
+  sigmaDecay: 0.99995,
+};
+
 let obstacles = [];
 let light = null;
-let robot = null;
+let robots = [];
+let selectedRobotIndex = 0;
+let globalLearningEnabled = true;
 
 function rand(min, max) {
   return Math.random() * (max - min) + min;
+}
+
+function randn() {
+  let u = 0;
+  let v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
 
 function clamp(value, min, max) {
@@ -112,7 +142,35 @@ function generateMap() {
   light = { x: lx, y: ly, sigma: 110 };
 }
 
-function resetRobot() {
+function createBrain(inputSize, hiddenSize, outputSize) {
+  const w1 = Array.from({ length: hiddenSize }, () =>
+    Array.from({ length: inputSize }, () => rand(-0.25, 0.25))
+  );
+  const b1 = Array.from({ length: hiddenSize }, () => 0);
+  const w2 = Array.from({ length: outputSize }, () =>
+    Array.from({ length: hiddenSize }, () => rand(-0.25, 0.25))
+  );
+  const b2 = Array.from({ length: outputSize }, () => 0);
+  return { inputSize, hiddenSize, outputSize, w1, b1, w2, b2 };
+}
+
+function createTrainState(enabled) {
+  return {
+    enabled,
+    lr: TRAIN_DEFAULT.lr,
+    sigma: TRAIN_DEFAULT.sigma,
+    sigmaMin: TRAIN_DEFAULT.sigmaMin,
+    sigmaDecay: TRAIN_DEFAULT.sigmaDecay,
+    rewardBaseline: 0,
+    rewardAvg: 0,
+    lastReward: 0,
+    steps: 0,
+    collisions: 0,
+    goals: 0,
+  };
+}
+
+function sampleValidPose() {
   let x = 0;
   let y = 0;
   for (let i = 0; i < 300; i++) {
@@ -120,16 +178,95 @@ function resetRobot() {
     y = rand(50, WORLD.height - 50);
     if (!blocked(x, y, ROBOT_BASE.radius + 4)) break;
   }
+  return { x, y, theta: rand(0, Math.PI * 2) };
+}
 
-  robot = {
-    x,
-    y,
-    theta: rand(0, Math.PI * 2),
+function robotColor(index) {
+  const hue = (index * 36) % 360;
+  return `hsl(${hue} 68% 58%)`;
+}
+
+function createRobot(index) {
+  const pose = sampleValidPose();
+  const initialIntensity = lightIntensity(pose.x, pose.y);
+  return {
+    index,
+    color: robotColor(index),
+    x: pose.x,
+    y: pose.y,
+    theta: pose.theta,
     vl: 0,
     vr: 0,
     trail: [],
-    bestIntensity: 0,
+    bestIntensity: initialIntensity,
+    prevIntensity: initialIntensity,
+    lastSensors: null,
+    lastAction: [0, 0],
+    lastPolicyMean: [0, 0],
+    brain: createBrain(BRAIN_CFG.inputSize, BRAIN_CFG.hiddenSize, BRAIN_CFG.outputSize),
+    train: createTrainState(globalLearningEnabled),
   };
+}
+
+function resetRobotPose(robot) {
+  const pose = sampleValidPose();
+  const initialIntensity = lightIntensity(pose.x, pose.y);
+  robot.x = pose.x;
+  robot.y = pose.y;
+  robot.theta = pose.theta;
+  robot.vl = 0;
+  robot.vr = 0;
+  robot.trail = [];
+  robot.bestIntensity = initialIntensity;
+  robot.prevIntensity = initialIntensity;
+  robot.lastSensors = null;
+  robot.lastAction = [0, 0];
+  robot.lastPolicyMean = [0, 0];
+}
+
+function resetRobotBrain(robot) {
+  robot.brain = createBrain(BRAIN_CFG.inputSize, BRAIN_CFG.hiddenSize, BRAIN_CFG.outputSize);
+  robot.train = createTrainState(globalLearningEnabled);
+}
+
+function spawnRobots(count) {
+  robots = [];
+  for (let i = 0; i < count; i++) {
+    robots.push(createRobot(i));
+  }
+  selectedRobotIndex = clamp(selectedRobotIndex, 0, robots.length - 1);
+  populateRobotSelector();
+}
+
+function populateRobotSelector() {
+  if (!robotSelect) return;
+  robotSelect.innerHTML = "";
+  for (let i = 0; i < robots.length; i++) {
+    const option = document.createElement("option");
+    option.value = String(i);
+    option.textContent = `Robot ${i + 1}`;
+    robotSelect.appendChild(option);
+  }
+  robotSelect.value = String(selectedRobotIndex);
+  renderRobotLegend();
+}
+
+function renderRobotLegend() {
+  if (!robotLegendEl) return;
+  robotLegendEl.innerHTML = "";
+  for (let i = 0; i < robots.length; i++) {
+    const robot = robots[i];
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `legend-item ${i === selectedRobotIndex ? "selected" : ""}`;
+    item.innerHTML = `<span class="legend-swatch" style="background:${robot.color}"></span><span>R${i + 1}</span>`;
+    item.addEventListener("click", () => {
+      selectedRobotIndex = i;
+      if (robotSelect) robotSelect.value = String(i);
+      renderRobotLegend();
+    });
+    robotLegendEl.appendChild(item);
+  }
 }
 
 function sense(robotState) {
@@ -140,10 +277,7 @@ function sense(robotState) {
     const d = distanceToObstacle(robotState.x, robotState.y, heading, range);
     const sx = robotState.x + Math.cos(heading) * 18;
     const sy = robotState.y + Math.sin(heading) * 18;
-    const b = lightIntensity(
-      sx + Math.cos(heading) * 18,
-      sy + Math.sin(heading) * 18
-    );
+    const b = lightIntensity(sx + Math.cos(heading) * 18, sy + Math.sin(heading) * 18);
     return {
       angle: heading,
       distance: d,
@@ -154,33 +288,100 @@ function sense(robotState) {
   return sensors;
 }
 
-function controller(robotState, sensors, dt) {
+function featuresFromSensors(sensors) {
   const [left, center, right] = sensors;
-  const avoidL = 1 - clamp(left.distance / left.maxRange, 0, 1);
-  const avoidC = 1 - clamp(center.distance / center.maxRange, 0, 1);
-  const avoidR = 1 - clamp(right.distance / right.maxRange, 0, 1);
-
+  const leftDist = clamp(left.distance / left.maxRange, 0, 1);
+  const centerDist = clamp(center.distance / center.maxRange, 0, 1);
+  const rightDist = clamp(right.distance / right.maxRange, 0, 1);
   const brightDiff = right.brightness - left.brightness;
-  const centeredBright = center.brightness;
+  const centerAvoid = 1 - centerDist;
+  return [
+    leftDist,
+    centerDist,
+    rightDist,
+    left.brightness,
+    center.brightness,
+    right.brightness,
+    brightDiff,
+    centerAvoid,
+    1,
+  ];
+}
 
-  let forward = 45 + 80 * centeredBright;
-  let turn = 120 * brightDiff;
-
-  // Strong repulsion when obstacles are close in front.
-  forward -= 95 * avoidC;
-  turn += 220 * (avoidL - avoidR);
-
-  // Escape behavior when boxed in.
-  if (avoidC > 0.85 && (avoidL > 0.65 || avoidR > 0.65)) {
-    forward = -20;
-    turn += avoidL > avoidR ? -130 : 130;
+function forwardBrain(model, input) {
+  const hidden = new Array(model.hiddenSize);
+  for (let i = 0; i < model.hiddenSize; i++) {
+    let sum = model.b1[i];
+    for (let j = 0; j < model.inputSize; j++) {
+      sum += model.w1[i][j] * input[j];
+    }
+    hidden[i] = Math.tanh(sum);
   }
 
-  const v = clamp(forward, -40, 110);
-  const w = clamp(turn, -3.2, 3.2);
+  const mean = new Array(model.outputSize);
+  for (let i = 0; i < model.outputSize; i++) {
+    let sum = model.b2[i];
+    for (let j = 0; j < model.hiddenSize; j++) {
+      sum += model.w2[i][j] * hidden[j];
+    }
+    mean[i] = Math.tanh(sum);
+  }
 
-  robotState.vl = clamp(v - (w * ROBOT_BASE.wheelBase) / 2, -ROBOT_BASE.maxWheelSpeed, ROBOT_BASE.maxWheelSpeed);
-  robotState.vr = clamp(v + (w * ROBOT_BASE.wheelBase) / 2, -ROBOT_BASE.maxWheelSpeed, ROBOT_BASE.maxWheelSpeed);
+  return { input, hidden, mean };
+}
+
+function sampleAction(mean, sigma) {
+  return mean.map((m) => clamp(m + randn() * sigma, -1, 1));
+}
+
+function applyPolicyGradient(model, cache, action, sigma, advantage, lr) {
+  const dMu = new Array(model.outputSize);
+  const sigma2 = sigma * sigma;
+  for (let i = 0; i < model.outputSize; i++) {
+    dMu[i] = (advantage * (action[i] - cache.mean[i])) / sigma2;
+  }
+
+  const dOut = new Array(model.outputSize);
+  for (let i = 0; i < model.outputSize; i++) {
+    dOut[i] = dMu[i] * (1 - cache.mean[i] * cache.mean[i]);
+  }
+
+  const dHidden = new Array(model.hiddenSize).fill(0);
+  for (let i = 0; i < model.outputSize; i++) {
+    for (let j = 0; j < model.hiddenSize; j++) {
+      dHidden[j] += model.w2[i][j] * dOut[i];
+      model.w2[i][j] += lr * dOut[i] * cache.hidden[j];
+      model.w2[i][j] = clamp(model.w2[i][j], -3, 3);
+    }
+    model.b2[i] += lr * dOut[i];
+    model.b2[i] = clamp(model.b2[i], -3, 3);
+  }
+
+  for (let i = 0; i < model.hiddenSize; i++) {
+    const dPre = dHidden[i] * (1 - cache.hidden[i] * cache.hidden[i]);
+    for (let j = 0; j < model.inputSize; j++) {
+      model.w1[i][j] += lr * dPre * cache.input[j];
+      model.w1[i][j] = clamp(model.w1[i][j], -3, 3);
+    }
+    model.b1[i] += lr * dPre;
+    model.b1[i] = clamp(model.b1[i], -3, 3);
+  }
+}
+
+function applyAction(robotState, action, dt) {
+  const forward = action[0] * 95;
+  const turn = action[1] * 3.2;
+
+  robotState.vl = clamp(
+    forward - (turn * ROBOT_BASE.wheelBase) / 2,
+    -ROBOT_BASE.maxWheelSpeed,
+    ROBOT_BASE.maxWheelSpeed
+  );
+  robotState.vr = clamp(
+    forward + (turn * ROBOT_BASE.wheelBase) / 2,
+    -ROBOT_BASE.maxWheelSpeed,
+    ROBOT_BASE.maxWheelSpeed
+  );
 
   const linear = (robotState.vl + robotState.vr) / 2;
   const angular = (robotState.vr - robotState.vl) / ROBOT_BASE.wheelBase;
@@ -188,20 +389,62 @@ function controller(robotState, sensors, dt) {
   const ny = robotState.y + Math.sin(robotState.theta) * linear * dt;
   const nt = robotState.theta + angular * dt;
 
+  let collision = false;
   if (!blocked(nx, ny, ROBOT_BASE.radius)) {
     robotState.x = nx;
     robotState.y = ny;
     robotState.theta = nt;
   } else {
+    collision = true;
     robotState.theta += (Math.random() - 0.5) * 0.8;
     robotState.vl *= 0.3;
     robotState.vr *= 0.3;
   }
 
+  return collision;
+}
+
+function stepNeuralController(robotState, sensors, dt) {
+  const cache = forwardBrain(robotState.brain, featuresFromSensors(sensors));
+  const action = sampleAction(cache.mean, robotState.train.sigma);
+  const collision = applyAction(robotState, action, dt);
+
   const intensity = lightIntensity(robotState.x, robotState.y);
+  const dToGoal = Math.hypot(robotState.x - light.x, robotState.y - light.y);
+  const deltaBrightness = intensity - robotState.prevIntensity;
+  const nearObstacle = 1 - clamp(sensors[1].distance / sensors[1].maxRange, 0, 1);
+
+  let reward = 5.4 * deltaBrightness;
+  reward += 0.025 * intensity;
+  reward -= 0.008;
+  reward -= 0.03 * nearObstacle;
+  if (collision) reward -= 0.08;
+  if (dToGoal < ROBOT_BASE.radius + 15) {
+    reward += 0.12;
+    robotState.train.goals += 1;
+  }
+
+  robotState.train.lastReward = reward;
+  robotState.train.rewardBaseline = 0.995 * robotState.train.rewardBaseline + 0.005 * reward;
+  robotState.train.rewardAvg = 0.995 * robotState.train.rewardAvg + 0.005 * reward;
+
+  if (robotState.train.enabled) {
+    const advantage = reward - robotState.train.rewardBaseline;
+    applyPolicyGradient(robotState.brain, cache, action, robotState.train.sigma, advantage, robotState.train.lr);
+    robotState.train.sigma = Math.max(robotState.train.sigmaMin, robotState.train.sigma * robotState.train.sigmaDecay);
+  }
+
+  robotState.train.steps += 1;
+  if (collision) robotState.train.collisions += 1;
+
+  robotState.prevIntensity = intensity;
   robotState.bestIntensity = Math.max(robotState.bestIntensity, intensity);
   robotState.trail.push({ x: robotState.x, y: robotState.y });
   if (robotState.trail.length > 900) robotState.trail.shift();
+
+  robotState.lastSensors = sensors;
+  robotState.lastAction = action;
+  robotState.lastPolicyMean = cache.mean;
 }
 
 function drawLightField() {
@@ -226,45 +469,45 @@ function drawObstacles() {
   }
 }
 
-function drawTrail() {
-  if (robot.trail.length < 2) return;
+function drawTrail(robotState, selected) {
+  if (robotState.trail.length < 2) return;
   ctx.beginPath();
-  ctx.moveTo(robot.trail[0].x, robot.trail[0].y);
-  for (let i = 1; i < robot.trail.length; i++) {
-    ctx.lineTo(robot.trail[i].x, robot.trail[i].y);
+  ctx.moveTo(robotState.trail[0].x, robotState.trail[0].y);
+  for (let i = 1; i < robotState.trail.length; i++) {
+    ctx.lineTo(robotState.trail[i].x, robotState.trail[i].y);
   }
-  ctx.strokeStyle = "rgba(255, 140, 66, 0.5)";
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = selected ? "rgba(255, 140, 66, 0.62)" : "rgba(155, 190, 255, 0.22)";
+  ctx.lineWidth = selected ? 2.2 : 1.3;
   ctx.stroke();
 }
 
-function drawRobot() {
-  const sensors = sense(robot);
+function drawRobot(robotState, selected) {
+  const sensors = robotState.lastSensors || sense(robotState);
   for (const s of sensors) {
-    const ex = robot.x + Math.cos(s.angle) * s.distance;
-    const ey = robot.y + Math.sin(s.angle) * s.distance;
+    const ex = robotState.x + Math.cos(s.angle) * s.distance;
+    const ey = robotState.y + Math.sin(s.angle) * s.distance;
     ctx.beginPath();
-    ctx.moveTo(robot.x, robot.y);
+    ctx.moveTo(robotState.x, robotState.y);
     ctx.lineTo(ex, ey);
-    ctx.strokeStyle = "rgba(190, 220, 255, 0.45)";
+    ctx.strokeStyle = selected ? "rgba(190, 220, 255, 0.45)" : "rgba(190, 220, 255, 0.12)";
     ctx.stroke();
   }
 
   ctx.beginPath();
-  ctx.arc(robot.x, robot.y, ROBOT_BASE.radius, 0, Math.PI * 2);
-  ctx.fillStyle = "#ff8c42";
+  ctx.arc(robotState.x, robotState.y, ROBOT_BASE.radius, 0, Math.PI * 2);
+  ctx.fillStyle = robotState.color;
   ctx.fill();
-  ctx.strokeStyle = "#ffd6b7";
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = selected ? "#ffd6b7" : "rgba(245, 250, 255, 0.45)";
+  ctx.lineWidth = selected ? 2.1 : 1.2;
   ctx.stroke();
 
-  const hx = robot.x + Math.cos(robot.theta) * ROBOT_BASE.radius;
-  const hy = robot.y + Math.sin(robot.theta) * ROBOT_BASE.radius;
+  const hx = robotState.x + Math.cos(robotState.theta) * ROBOT_BASE.radius;
+  const hy = robotState.y + Math.sin(robotState.theta) * ROBOT_BASE.radius;
   ctx.beginPath();
-  ctx.moveTo(robot.x, robot.y);
+  ctx.moveTo(robotState.x, robotState.y);
   ctx.lineTo(hx, hy);
   ctx.strokeStyle = "#fff";
-  ctx.lineWidth = 2.2;
+  ctx.lineWidth = selected ? 2.2 : 1.2;
   ctx.stroke();
 }
 
@@ -286,22 +529,40 @@ function drawFrame() {
   ctx.clearRect(0, 0, WORLD.width, WORLD.height);
   drawLightField();
   drawObstacles();
-  drawTrail();
+  for (let i = 0; i < robots.length; i++) {
+    drawTrail(robots[i], i === selectedRobotIndex);
+  }
   drawGoal();
-  drawRobot();
+  for (let i = 0; i < robots.length; i++) {
+    drawRobot(robots[i], i === selectedRobotIndex);
+  }
 }
 
 function updateStats() {
+  const robot = robots[selectedRobotIndex];
+  if (!robot) return;
+
   const intensity = lightIntensity(robot.x, robot.y);
   const dToGoal = Math.hypot(robot.x - light.x, robot.y - light.y);
+  const avgBest = robots.reduce((acc, r) => acc + r.bestIntensity, 0) / robots.length;
+
   statsEl.innerHTML = [
+    `Viewing: Robot ${robot.index + 1} / ${robots.length}`,
     `Time: ${SIM.time.toFixed(1)} s`,
     `Position: (${robot.x.toFixed(1)}, ${robot.y.toFixed(1)})`,
     `Heading: ${(robot.theta % (Math.PI * 2)).toFixed(2)} rad`,
     `Wheel Speeds (L/R): ${robot.vl.toFixed(1)} / ${robot.vr.toFixed(1)}`,
     `Current Brightness: ${intensity.toFixed(3)}`,
-    `Best Brightness: ${robot.bestIntensity.toFixed(3)}`,
+    `Best Brightness (this robot): ${robot.bestIntensity.toFixed(3)}`,
+    `Best Brightness (fleet avg): ${avgBest.toFixed(3)}`,
     `Distance to Brightest Spot: ${dToGoal.toFixed(1)} px`,
+    `Learning: ${robot.train.enabled ? "On" : "Off"}`,
+    `Training Steps: ${robot.train.steps}`,
+    `Exploration Sigma: ${robot.train.sigma.toFixed(3)}`,
+    `Learning Rate: ${robot.train.lr.toFixed(4)}`,
+    `Reward (avg / last): ${robot.train.rewardAvg.toFixed(4)} / ${robot.train.lastReward.toFixed(4)}`,
+    `Policy Output (v,w): ${robot.lastAction[0].toFixed(2)} / ${robot.lastAction[1].toFixed(2)}`,
+    `Collisions: ${robot.train.collisions} | Goal Hits: ${robot.train.goals}`,
   ].join("<br>");
 }
 
@@ -310,11 +571,15 @@ function loop(ts) {
   if (!lastTs) lastTs = ts;
   const dt = Math.min((ts - lastTs) / 1000, SIM.dtMax);
   lastTs = ts;
+
   if (SIM.running) {
-    const sensors = sense(robot);
-    controller(robot, sensors, dt);
+    for (const robot of robots) {
+      const sensors = sense(robot);
+      stepNeuralController(robot, sensors, dt);
+    }
     SIM.time += dt;
   }
+
   drawFrame();
   updateStats();
   requestAnimationFrame(loop);
@@ -326,15 +591,48 @@ toggleBtn.addEventListener("click", () => {
 });
 
 resetBtn.addEventListener("click", () => {
-  resetRobot();
+  const robot = robots[selectedRobotIndex];
+  if (!robot) return;
+  resetRobotPose(robot);
 });
 
 newMapBtn.addEventListener("click", () => {
   generateMap();
-  resetRobot();
+  for (const robot of robots) {
+    resetRobotPose(robot);
+  }
   SIM.time = 0;
 });
 
+if (robotSelect) {
+  robotSelect.addEventListener("change", () => {
+    selectedRobotIndex = clamp(Number(robotSelect.value) || 0, 0, robots.length - 1);
+    renderRobotLegend();
+  });
+}
+
+if (learnBtn) {
+  learnBtn.addEventListener("click", () => {
+    globalLearningEnabled = !globalLearningEnabled;
+    for (const robot of robots) {
+      robot.train.enabled = globalLearningEnabled;
+    }
+    learnBtn.textContent = `Learning: ${globalLearningEnabled ? "On" : "Off"}`;
+  });
+}
+
+if (resetBrainBtn) {
+  resetBrainBtn.addEventListener("click", () => {
+    const robot = robots[selectedRobotIndex];
+    if (!robot) return;
+    resetRobotBrain(robot);
+    resetRobotPose(robot);
+  });
+}
+
 generateMap();
-resetRobot();
+spawnRobots(ROBOT_COUNT);
+if (learnBtn) {
+  learnBtn.textContent = `Learning: ${globalLearningEnabled ? "On" : "Off"}`;
+}
 requestAnimationFrame(loop);

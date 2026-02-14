@@ -1,0 +1,98 @@
+:root {
+  --bg: #0b1220;
+  --panel: #121a2a;
+  --ink: #f3f7ff;
+  --accent: #ff8c42;
+  --muted: #93a4c7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 20% 20%, #172338 0%, transparent 35%),
+    radial-gradient(circle at 80% 80%, #1d2a42 0%, transparent 40%),
+    var(--bg);
+  color: var(--ink);
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(680px, 1fr) 320px;
+  gap: 16px;
+  padding: 16px;
+}
+
+.sim-panel,
+.hud {
+  background: linear-gradient(180deg, #121a2a, #0f1725);
+  border: 1px solid #27344f;
+  border-radius: 14px;
+}
+
+.sim-panel {
+  padding: 10px;
+}
+
+#simCanvas {
+  width: 100%;
+  height: auto;
+  border-radius: 10px;
+  border: 1px solid #2d4065;
+  background: #0a101a;
+}
+
+.hud {
+  padding: 16px;
+}
+
+.hud h1 {
+  margin: 0 0 10px;
+  font-size: 1.4rem;
+}
+
+.hud p {
+  margin: 0 0 14px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.stats {
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #2b3d5f;
+  background: #0f1828;
+  min-height: 130px;
+  line-height: 1.5;
+}
+
+.controls {
+  margin-top: 14px;
+  display: grid;
+  gap: 8px;
+}
+
+button {
+  background: #1a2842;
+  border: 1px solid #35507f;
+  color: var(--ink);
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+button:hover {
+  background: #23365a;
+}
+
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}

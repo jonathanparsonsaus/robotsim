@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>2D Robot Brightness Seeker</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <section class="sim-panel">
+        <canvas id="simCanvas" width="1000" height="650"></canvas>
+      </section>
+      <aside class="hud">
+        <h1>2D Robot Sim</h1>
+        <p>Differential-drive robot seeks the brightest location while avoiding obstacles.</p>
+        <div class="stats" id="stats"></div>
+        <div class="controls">
+          <button id="toggleBtn">Pause</button>
+          <button id="resetBtn">Reset Robot</button>
+          <button id="newMapBtn">New Map</button>
+        </div>
+      </aside>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>
